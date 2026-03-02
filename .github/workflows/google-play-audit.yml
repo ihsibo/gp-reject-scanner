@@ -88,13 +88,13 @@ jobs:
               let gradleFiles = '';
               try {
                   if (fs.existsSync('app/build.gradle')) {
-                      gradleFiles += '\n\n## app/build.gradle:\n```\n' + fs.readFileSync('app/build.gradle', 'utf8').slice(0, 5000) + '\n```\n';
+                      gradleFiles += '\\n\\n## app/build.gradle:\\n```\\n' + fs.readFileSync('app/build.gradle', 'utf8').slice(0, 5000) + '\\n```\\n';
                   }
                   if (fs.existsSync('app/build.gradle.kts')) {
-                      gradleFiles += '\n\n## app/build.gradle.kts:\n```\n' + fs.readFileSync('app/build.gradle.kts', 'utf8').slice(0, 5000) + '\n```\n';
+                      gradleFiles += '\\n\\n## app/build.gradle.kts:\\n```\\n' + fs.readFileSync('app/build.gradle.kts', 'utf8').slice(0, 5000) + '\\n```\\n';
                   }
                   if (fs.existsSync('build.gradle')) {
-                      gradleFiles += '\n\n## build.gradle:\n```\n' + fs.readFileSync('build.gradle', 'utf8').slice(0, 3000) + '\n```\n';
+                      gradleFiles += '\\n\\n## build.gradle:\\n```\\n' + fs.readFileSync('build.gradle', 'utf8').slice(0, 3000) + '\\n```\\n';
                   }
               } catch (e) {
                   console.warn('Could not read some gradle files:', e.message);
@@ -103,24 +103,13 @@ jobs:
               let manifestContent = '';
               try {
                   if (fs.existsSync('app/src/main/AndroidManifest.xml')) {
-                      manifestContent = '\n\n## AndroidManifest.xml:\n```xml\n' + fs.readFileSync('app/src/main/AndroidManifest.xml', 'utf8').slice(0, 10000) + '\n```\n';
+                      manifestContent = '\\n\\n## AndroidManifest.xml:\\n```xml\\n' + fs.readFileSync('app/src/main/AndroidManifest.xml', 'utf8').slice(0, 10000) + '\\n```\\n';
                   }
               } catch (e) {
                   console.warn('Could not read AndroidManifest.xml:', e.message);
               }
               
-              const fullPrompt = `${promptContent}
-
-## Repository Structure:
-\`\`\`
-${fileTree}
-\`\`\`
-
-${gradleFiles}
-
-${manifestContent}
-
-Now perform a comprehensive scan of this Android repository and generate the HTML report.`;
+              const fullPrompt = promptContent + '\\n\\n## Repository Structure:\\n```\\n' + fileTree + '\\n```\\n\\n' + gradleFiles + '\\n\\n' + manifestContent + '\\n\\nNow perform a comprehensive scan of this Android repository and generate the HTML report.';
               
               try {
                   const message = await client.messages.create({
@@ -144,7 +133,7 @@ Now perform a comprehensive scan of this Android repository and generate the HTM
                   let htmlContent = responseText;
                   
                   // If response contains markdown code blocks, extract the HTML
-                  const htmlMatch = responseText.match(/```html\n([\s\S]*?)\n```/);
+                  const htmlMatch = responseText.match(/\`\`\`html\\n([\\s\\S]*?)\\n\`\`\`/);
                   if (htmlMatch) {
                       htmlContent = htmlMatch[1];
                   }
