@@ -34,12 +34,15 @@ jobs:
           BRANCH: ${{ inputs.branch }}
         run: |
           echo "🔍 Cloning target repository: $REPO_URL"
-          echo "📌 Branch: $BRANCH"
+          echo "📌 Preferred branch: $BRANCH"
           
-          # Clone the target repository using GitHub token
-          # For private org repos, use GH_ORG_TOKEN secret
-          REPO_URL_WITH_TOKEN=$(echo "$REPO_URL" | sed "s|https://|https://${GH_TOKEN}@|")
-          git clone --depth 1 --branch "$BRANCH" "$REPO_URL_WITH_TOKEN" target-app
+          # Use Python script for robust cloning with smart branch detection
+          python3 ../scanner/scripts/clone_repo.py \
+            "$REPO_URL" \
+            target-app \
+            --branch "$BRANCH" \
+            --token "$GH_TOKEN" \
+            --use-token
           
           echo "✅ Repository cloned successfully"
           ls -la target-app/
@@ -61,6 +64,12 @@ jobs:
           
           echo "🔍 Starting Google Play compliance scan..."
           echo "📂 Scanning directory: $(pwd)"
+          
+          # Verify we're in the correct directory and it's a valid Git repository
+          if [ ! -d ".git" ]; then
+            echo "::error::Not in a Git repository directory"
+            exit 1
+          fi
           
           # Run the Claude analysis using the Anthropic API
           node << 'SCRIPT'
@@ -179,10 +188,17 @@ jobs:
             SCORE=$(grep -oP 'data-score="\K[0-9]+' google-play-audit-report.html | head -1 || echo "N/A")
             CRITICAL=$(grep -oP 'data-critical-fails="\K[0-9]+' google-play-audit-report.html | head -1 || echo "0")
             WARNS=$(grep -oP 'data-warns="\K[0-9]+' google-play-audit-report.html | head -1 || echo "0")
+            
+            # Verify the report looks valid
+            if [ "$SCORE" = "N/A" ] && ! grep -q "google-play-audit" google-play-audit-report.html; then
+              echo "::warning::HTML report may be invalid or empty"
+            fi
           else
+            echo "::error::HTML report file not found"
             SCORE="N/A"
             CRITICAL="0"
             WARNS="0"
+            exit 1
           fi
 
           echo "score=$SCORE" >> $GITHUB_OUTPUT
@@ -262,3 +278,12 @@ jobs:
           fi
 
           echo "✅ No critical issues. Score: ${SCORE}%"
+
+      - name: Clean up target directory
+        if: always()
+        run: |
+          echo "🧹 Cleaning up target directory..."
+          if [ -d "target-app" ]; then
+            rm -rf target-app
+            echo "✅ Target directory cleaned up"
+          fi
