@@ -1,0 +1,275 @@
+name: Google Play Pre-Release Audit
+
+on:
+  # Manual trigger with repository URL input
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: "Android repository URL (e.g., https://github.com/owner/android-app.git)"
+        required: true
+        type: string
+      branch:
+        description: "Branch to scan (default: main)"
+        required: false
+        default: "main"
+        type: string
+
+jobs:
+  google-play-audit:
+    name: Google Play Compliance Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout scanner repository (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: scanner
+
+      - name: Clone target Android repository
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORG_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO_URL: ${{ inputs.repository_url }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          echo "🔍 Cloning target repository: $REPO_URL"
+          echo "📌 Branch: $BRANCH"
+          
+          # Clone the target repository using GitHub token
+          # For private org repos, use GH_ORG_TOKEN secret
+          REPO_URL_WITH_TOKEN=$(echo "$REPO_URL" | sed "s|https://|https://${GH_TOKEN}@|")
+          git clone --depth 1 --branch "$BRANCH" "$REPO_URL_WITH_TOKEN" target-app
+          
+          echo "✅ Repository cloned successfully"
+          ls -la target-app/
+
+      - name: Set up Node.js (for Anthropic API)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Anthropic SDK
+        run: npm install @anthropic-ai/sdk
+
+      - name: Run Google Play Pre-Release Audit
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Navigate to target app directory
+          cd target-app
+          
+          echo "🔍 Starting Google Play compliance scan..."
+          echo "📂 Scanning directory: $(pwd)"
+          
+          # Run the Claude analysis using the Anthropic API
+          node << 'SCRIPT'
+          const Anthropic = require('@anthropic-ai/sdk');
+          const fs = require('fs');
+          const path = require('path');
+          const { execSync } = require('child_process');
+
+          const client = new Anthropic({
+              apiKey: process.env.ANTHROPIC_API_KEY,
+          });
+
+          async function runScan() {
+              console.log('🔍 Starting Google Play compliance scan...');
+              
+              // Read the prompt from scanner repo
+              const promptPath = '../scanner/.github/prompts/google-play-scan-prompt.md';
+              const promptContent = fs.readFileSync(promptPath, 'utf8');
+              
+              // Get repository file tree for context
+              console.log('📂 Analyzing repository structure...');
+              const fileTree = execSync('find . -type f -not -path "*/\\.*" -not -path "*/node_modules/*" -not -path "*/build/*" | head -300').toString();
+              
+              // Read key files for context
+              let gradleFiles = '';
+              try {
+                  if (fs.existsSync('app/build.gradle')) {
+                      gradleFiles += '\n\n## app/build.gradle:\n```\n' + fs.readFileSync('app/build.gradle', 'utf8').slice(0, 5000) + '\n```\n';
+                  }
+                  if (fs.existsSync('app/build.gradle.kts')) {
+                      gradleFiles += '\n\n## app/build.gradle.kts:\n```\n' + fs.readFileSync('app/build.gradle.kts', 'utf8').slice(0, 5000) + '\n```\n';
+                  }
+                  if (fs.existsSync('build.gradle')) {
+                      gradleFiles += '\n\n## build.gradle:\n```\n' + fs.readFileSync('build.gradle', 'utf8').slice(0, 3000) + '\n```\n';
+                  }
+              } catch (e) {
+                  console.warn('Could not read some gradle files:', e.message);
+              }
+              
+              let manifestContent = '';
+              try {
+                  if (fs.existsSync('app/src/main/AndroidManifest.xml')) {
+                      manifestContent = '\n\n## AndroidManifest.xml:\n```xml\n' + fs.readFileSync('app/src/main/AndroidManifest.xml', 'utf8').slice(0, 10000) + '\n```\n';
+                  }
+              } catch (e) {
+                  console.warn('Could not read AndroidManifest.xml:', e.message);
+              }
+              
+              const fullPrompt = `${promptContent}
+
+## Repository Structure:
+\`\`\`
+${fileTree}
+\`\`\`
+
+${gradleFiles}
+
+${manifestContent}
+
+Now perform a comprehensive scan of this Android repository and generate the HTML report.`;
+              
+              try {
+                  const message = await client.messages.create({
+                      model: 'claude-sonnet-4-20250514',
+                      max_tokens: 16000,
+                      messages: [{
+                          role: 'user',
+                          content: fullPrompt
+                      }]
+                  });
+                  
+                  // Extract the response
+                  let responseText = '';
+                  for (const block of message.content) {
+                      if (block.type === 'text') {
+                          responseText += block.text;
+                      }
+                  }
+                  
+                  // Try to extract HTML from the response
+                  let htmlContent = responseText;
+                  
+                  // If response contains markdown code blocks, extract the HTML
+                  const htmlMatch = responseText.match(/```html\n([\s\S]*?)\n```/);
+                  if (htmlMatch) {
+                      htmlContent = htmlMatch[1];
+                  }
+                  
+                  // Ensure it starts with HTML tag
+                  if (!htmlContent.trim().toLowerCase().startsWith('<!doctype') && 
+                      !htmlContent.trim().toLowerCase().startsWith('<html')) {
+                      console.error('⚠️  Response does not appear to be HTML. Saving raw response.');
+                  }
+                  
+                  // Save the HTML report
+                  fs.writeFileSync('google-play-audit-report.html', htmlContent);
+                  
+                  console.log('✅ Scan complete! Report saved to google-play-audit-report.html');
+                  
+              } catch (error) {
+                  console.error('❌ Error running scan:', error);
+                  process.exit(1);
+              }
+          }
+
+          runScan().catch(error => {
+              console.error('Fatal error:', error);
+              process.exit(1);
+          });
+          SCRIPT
+
+          # Verify the HTML report was produced
+          if [ ! -f "google-play-audit-report.html" ]; then
+            echo "::error::Audit did not produce google-play-audit-report.html"
+            exit 1
+          fi
+
+          echo "✅ Audit report generated: google-play-audit-report.html"
+
+      - name: Extract score for summary
+        id: score
+        run: |
+          cd target-app
+          
+          # Pull the numeric score out of the HTML report
+          if [ -f "google-play-audit-report.html" ]; then
+            SCORE=$(grep -oP 'data-score="\K[0-9]+' google-play-audit-report.html | head -1 || echo "N/A")
+            CRITICAL=$(grep -oP 'data-critical-fails="\K[0-9]+' google-play-audit-report.html | head -1 || echo "0")
+            WARNS=$(grep -oP 'data-warns="\K[0-9]+' google-play-audit-report.html | head -1 || echo "0")
+          else
+            SCORE="N/A"
+            CRITICAL="0"
+            WARNS="0"
+          fi
+
+          echo "score=$SCORE" >> $GITHUB_OUTPUT
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "warns=$WARNS" >> $GITHUB_OUTPUT
+
+          # Set a colour for the badge
+          if [ "$SCORE" = "N/A" ]; then
+            echo "color=lightgrey" >> $GITHUB_OUTPUT
+          elif [ "$SCORE" -ge 85 ]; then
+            echo "color=brightgreen" >> $GITHUB_OUTPUT
+          elif [ "$SCORE" -ge 65 ]; then
+            echo "color=yellow" >> $GITHUB_OUTPUT
+          elif [ "$SCORE" -ge 40 ]; then
+            echo "color=orange" >> $GITHUB_OUTPUT
+          else
+            echo "color=red" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload HTML report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-play-audit-report-${{ github.run_number }}
+          path: target-app/google-play-audit-report.html
+          retention-days: 30
+
+      - name: Write job summary
+        run: |
+          SCORE="${{ steps.score.outputs.score }}"
+          CRITICAL="${{ steps.score.outputs.critical }}"
+          WARNS="${{ steps.score.outputs.warns }}"
+          REPO_URL="${{ inputs.repository_url }}"
+          BRANCH="${{ inputs.branch }}"
+
+          if [ "$SCORE" != "N/A" ] && [ "$SCORE" -ge 85 ]; then
+            TIER="🟢 High — likely to pass review"
+          elif [ "$SCORE" != "N/A" ] && [ "$SCORE" -ge 65 ]; then
+            TIER="🟡 Medium — may trigger manual review"
+          elif [ "$SCORE" != "N/A" ] && [ "$SCORE" -ge 40 ]; then
+            TIER="🟠 Risky — multiple policy concerns"
+          else
+            TIER="🔴 High Risk — probable rejection"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## Google Play Pre-Release Audit
+
+          **Repository:** \`$REPO_URL\`
+          **Branch:** \`$BRANCH\`
+
+          | Metric | Value |
+          |--------|-------|
+          | **Approval Score** | **${SCORE}%** |
+          | **Risk Tier** | ${TIER} |
+          | **Critical FAILs** | ${CRITICAL} |
+          | **Warnings** | ${WARNS} |
+
+          > Download the full HTML report from the **Artifacts** section above for detailed findings and fix recommendations.
+
+          EOF
+
+      - name: Fail workflow if score below threshold
+        run: |
+          CRITICAL="${{ steps.score.outputs.critical }}"
+          SCORE="${{ steps.score.outputs.score }}"
+
+          # Fail the workflow if score is below 50% (per requirements)
+          if [ "$SCORE" != "N/A" ] && [ "$SCORE" -lt 50 ]; then
+            echo "::error::Google Play approval score is ${SCORE}% which is below the 50% threshold. Release blocked."
+            exit 1
+          fi
+
+          # Also fail if there are any critical issues
+          if [ "$CRITICAL" != "N/A" ] && [ "$CRITICAL" -gt 0 ]; then
+            echo "::error::$CRITICAL critical Google Play policy issue(s) found. Release blocked. Download the audit report for details."
+            exit 1
+          fi
+
+          echo "✅ No critical issues. Score: ${SCORE}%"

@@ -1,0 +1,25 @@
+# Node modules
+node_modules/
+package-lock.json
+package.json
+
+# Temporary files
+*.log
+*.tmp
+
+# Generated reports
+google-play-audit-report.html
+audit-run.log
+
+# Cloned target repos
+target-app/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
